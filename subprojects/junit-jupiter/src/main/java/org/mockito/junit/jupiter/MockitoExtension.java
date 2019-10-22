@@ -11,7 +11,10 @@ import static org.junit.platform.commons.support.AnnotationSupport.findAnnotatio
 import java.lang.reflect.Parameter;
 import java.util.LinkedHashSet;
 import java.util.Optional;
+import java.util.Queue;
 import java.util.Set;
+import java.util.concurrent.ConcurrentLinkedQueue;
+
 import org.junit.jupiter.api.extension.AfterEachCallback;
 import org.junit.jupiter.api.extension.BeforeEachCallback;
 import org.junit.jupiter.api.extension.ExtensionContext;
@@ -133,6 +136,8 @@ public class MockitoExtension implements TestInstancePostProcessor, BeforeEachCa
         this.strictness = strictness;
     }
 
+    private static final ThreadLocal<Queue<Object>> TEST_INSTANCE_HIERARCHIES = ThreadLocal.withInitial(ConcurrentLinkedQueue::new);
+
     /**
      * <p>Callback for post-processing the supplied test instance.
      *
@@ -147,7 +152,7 @@ public class MockitoExtension implements TestInstancePostProcessor, BeforeEachCa
      */
     @Override
     public void postProcessTestInstance(Object testInstance, ExtensionContext context) {
-        context.getStore(MOCKITO).put(TEST_INSTANCE, testInstance);
+        TEST_INSTANCE_HIERARCHIES.get().add(testInstance);
     }
 
     /**
@@ -160,7 +165,7 @@ public class MockitoExtension implements TestInstancePostProcessor, BeforeEachCa
         Set<Object> testInstances = new LinkedHashSet<>();
         testInstances.add(context.getRequiredTestInstance());
 
-        this.collectParentTestInstances(context, testInstances);
+        this.collectParentTestInstances(testInstances);
 
         Strictness actualStrictness = this.retrieveAnnotationFromTestClasses(context)
             .map(MockitoSettings::strictness)
@@ -192,31 +197,11 @@ public class MockitoExtension implements TestInstancePostProcessor, BeforeEachCa
         return annotation;
     }
 
-    private void collectParentTestInstances(ExtensionContext context, Set<Object> testInstances) {
-        Optional<ExtensionContext> initialParent = context.getParent();
-
-        // Ignoring first parent avoids parallel execution issues
-        // We can ignore the first parent because it has the test instance that is already in 'testInstances'
-        // See how 'testInstances' is populated
-        initialParent.ifPresent(parent -> collectParentTestInstance(parent.getParent(), context, testInstances));
-    }
-
-    @SuppressWarnings("OptionalUsedAsFieldOrParameterType")
-    private void collectParentTestInstance(
-        Optional<ExtensionContext> parent, ExtensionContext context,
-        Set<Object> testInstances) {
-
-        parent.ifPresent(currentParent -> {
-            if (currentParent != context.getRoot()) {
-                Object testInstance = currentParent.getStore(MOCKITO).remove(TEST_INSTANCE);
-
-                if (testInstance != null) {
-                    testInstances.add(testInstance);
-                }
-
-                collectParentTestInstance(currentParent.getParent(), context, testInstances);
-            }
-        });
+    private void collectParentTestInstances(Set<Object> testInstances) {
+        Queue<Object> recordedInstances = TEST_INSTANCE_HIERARCHIES.get();
+        while (!recordedInstances.isEmpty()) {
+            testInstances.add(recordedInstances.remove());
+        }
     }
 
     /**
